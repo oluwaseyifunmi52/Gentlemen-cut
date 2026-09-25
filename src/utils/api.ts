@@ -1,4 +1,8 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '');
+
+if (!API_BASE_URL) {
+  throw new Error('VITE_API_URL is not configured. Set VITE_API_URL in your environment (e.g., https://your-backend-domain.com/api)');
+}
 
 class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public fields?: Record<string, string[]>) {
