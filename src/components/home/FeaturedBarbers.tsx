@@ -77,7 +77,7 @@ const BarberProfile: React.FC<{ barber: Barber }> = ({ barber }) => {
     <article style={cardStyle}>
       <div style={imageWrapperStyle}>
         <img
-          src={barber.imageUrl || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&h=400&fit=crop'}
+          src={barber.imageUrl}
           alt={barber.name}
           style={imageStyle}
           loading="lazy"

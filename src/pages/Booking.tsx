@@ -11,6 +11,8 @@ const Booking: React.FC = () => {
   const [barbers, setBarbers] = useState<Barber[]>([])
   const [availability, setAvailability] = useState<AvailabilityResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadingServices, setLoadingServices] = useState(true)
+  const [loadingBarbers, setLoadingBarbers] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<BookingResponse | null>(null)
   const [showConfirmationModal, setShowConfirmationModal] = useState(false)
@@ -31,23 +33,29 @@ const Booking: React.FC = () => {
 
   const fetchServices = useCallback(async () => {
     try {
+      setLoadingServices(true)
       const data = await api.services.list()
       setServices(data.filter((s) => s.active))
     } catch (err: unknown) {
       const apiError = err as { message?: string; status?: number }
-      setError(apiError.message || "Failed to load services")
+      setError(apiError.message || "Failed to load services. Please try again.")
       console.error(err)
+    } finally {
+      setLoadingServices(false)
     }
   }, [])
 
   const fetchBarbers = useCallback(async () => {
     try {
+      setLoadingBarbers(true)
       const data = await api.barbers.list()
       setBarbers(data.filter((b) => b.active))
     } catch (err: unknown) {
       const apiError = err as { message?: string; status?: number }
-      setError(apiError.message || "Failed to load barbers")
+      setError(apiError.message || "Failed to load barbers. Please try again.")
       console.error(err)
+    } finally {
+      setLoadingBarbers(false)
     }
   }, [])
 
@@ -74,6 +82,7 @@ const Booking: React.FC = () => {
     if (!selectedDate || !selectedService) return
     try {
       setLoading(true)
+      setError(null)
       const data = await api.availability.get({
         date: selectedDate,
         serviceId: selectedService._id,
@@ -81,8 +90,7 @@ const Booking: React.FC = () => {
       })
       setAvailability(data)
     } catch (err) {
-      setError("Failed to load available times")
-      console.error(err)
+      setError("Failed to load available times. Please try again.")
     } finally {
       setLoading(false)
     }
@@ -129,7 +137,20 @@ const Booking: React.FC = () => {
     return null
   }
 
-  const formatPrice = (price: number) => `₦${(price / 100).toLocaleString()}`
+  const isFormComplete = () => {
+    return !!(
+      selectedService &&
+      selectedBarber &&
+      selectedDate &&
+      selectedTime &&
+      customer.name.trim() &&
+      customer.email.trim() &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email) &&
+      customer.phone.trim()
+    )
+  }
+
+  const formatPrice = (price: number) => `R${(price / 100).toLocaleString()}`
 
   const formatDuration = (minutes: number) => {
     if (minutes >= 60) {
@@ -142,13 +163,28 @@ const Booking: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    // Validate all required fields
+    if (!selectedService) {
+      setError("Please select a service")
+      return
+    }
+    if (!selectedBarber) {
+      setError("Please select a barber")
+      return
+    }
+    if (!selectedDate) {
+      setError("Please select a date")
+      return
+    }
+    if (!selectedTime) {
+      setError("Please select a time")
+      return
+    }
+    
     const validationError = validateCustomer()
     if (validationError) {
       setError(validationError)
-      return
-    }
-    if (!selectedService || !selectedDate || !selectedTime) {
-      setError("Please complete all steps")
       return
     }
 
@@ -158,7 +194,7 @@ const Booking: React.FC = () => {
     try {
       const bookingData: CreateBookingRequest = {
         serviceId: selectedService._id,
-        barberId: selectedBarber?._id,
+        barberId: selectedBarber._id,
         date: selectedDate,
         startTime: selectedTime,
         customer,
@@ -168,7 +204,13 @@ const Booking: React.FC = () => {
       setShowConfirmationModal(true)
     } catch (err: unknown) {
       const apiError = err as { code?: string; message?: string }
-      setError(apiError.message || "Booking failed. Please try again.")
+      if (apiError.code === 'CONFLICT' || apiError.code === 'SLOT_UNAVAILABLE') {
+        setError(apiError.message || "This appointment time is no longer available. Please select another time.")
+        // Refresh availability to show updated slots
+        fetchAvailability()
+      } else {
+        setError(apiError.message || "Unable to complete your booking. Please try again.")
+      }
     } finally {
       setLoading(false)
     }
@@ -225,9 +267,19 @@ const Booking: React.FC = () => {
 
   const getTimeSlots = () => {
     if (!availability) return []
-    if (availability.availableSlots && typeof availability.availableSlots === "object" && !Array.isArray(availability.availableSlots)) {
-      return availability.availableSlots[selectedBarber?._id || ""] || []
+    if (
+      availability.availableSlots &&
+      typeof availability.availableSlots === "object" &&
+      !Array.isArray(availability.availableSlots)
+    ) {
+      // availableSlots is a Record<string, string[]> (multiple barbers)
+      if (selectedBarber?._id) {
+        return availability.availableSlots[selectedBarber._id] || []
+      }
+      // No barber selected - return all slots from all barbers combined
+      return availability.allSlots || Object.values(availability.availableSlots).flat()
     }
+    // availableSlots is a string[] (single barber)
     return availability.availableSlots || []
   }
 
@@ -280,60 +332,110 @@ const Booking: React.FC = () => {
           {error && <div style={errorStyle}>{error}</div>}
 
           {step === "service" && (
-            <div style={gridStyle}>
-              {services.map((service) => (
-                <button
-                  key={service._id}
-                  onClick={() => handleServiceSelect(service)}
-                  disabled={loading}
-                  style={{
-                    ...cardStyle,
-                    border: selectedService?._id === service._id ? "2px solid #B9924A" : "1px solid rgba(23,23,23,0.06)",
-                    background: selectedService?._id === service._id ? "rgba(185,146,74,0.05)" : "#FFFFFF",
-                  }}
-                >
-                  <h3 style={cardTitleStyle}>{service.name}</h3>
-                  <p style={cardDescStyle}>{service.description}</p>
-                  <div style={cardMetaStyle}>
-                    <span>{formatDuration(service.durationMinutes)}</span>
-                    <span>{formatPrice(service.price)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
+            <>
+              {loadingServices && <p style={loadingStyle}>Loading services...</p>}
+              {!loadingServices && services.length === 0 && <p style={noDataStyle}>No services are currently available.</p>}
+              {!loadingServices && services.length > 0 && (
+                <div style={gridStyle}>
+                  {services.map((service) => (
+                    <button
+                      key={service._id}
+                      onClick={() => handleServiceSelect(service)}
+                      disabled={loading}
+                      style={{
+                        ...cardStyle,
+                        border: selectedService?._id === service._id ? "2px solid #B9924A" : "1px solid rgba(23,23,23,0.06)",
+                        background: selectedService?._id === service._id ? "rgba(185,146,74,0.05)" : "#FFFFFF",
+                      }}
+                    >
+                      {service.imageUrl && (
+                        <img src={service.imageUrl} alt={service.name} style={serviceImageStyle} loading="lazy" />
+                      )}
+                      <div style={cardContentStyle}>
+                        <h3 style={cardTitleStyle}>{service.name}</h3>
+                        <p style={cardDescStyle}>{service.description}</p>
+                        <div style={cardMetaStyle}>
+                          <span>{formatDuration(service.durationMinutes)}</span>
+                          <span>{formatPrice(service.price)}</span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           )}
 
           {step === "barber" && (
             <>
-              <p style={subStepStyle}>Selected: {selectedService?.name}</p>
-              <div style={gridStyle}>
-                {barbers.map((barber) => (
-                  <button
-                    key={barber._id}
-                    onClick={() => handleBarberSelect(barber)}
-                    disabled={loading}
-                    style={{
-                      ...barberCardStyle,
-                      border: selectedBarber?._id === barber._id ? "2px solid #B9924A" : "1px solid rgba(23,23,23,0.06)",
-                      background: selectedBarber?._id === barber._id ? "rgba(185,146,74,0.05)" : "#FFFFFF",
-                    }}
-                  >
-                    <div style={barberImageStyle}>
-                      <img src={barber.imageUrl || "/images/professional-barber-giving-a-taper-fade-haircut-in-modern-barbershop.webp"} alt={barber.name} style={barberImageStyle} loading="lazy" />
+              {loadingBarbers && <p style={loadingStyle}>Loading barbers...</p>}
+              {!loadingBarbers && barbers.length === 0 && <p style={noDataStyle}>No barbers are currently available.</p>}
+              {!loadingBarbers && barbers.length > 0 && (
+                <>
+                  <div style={selectedServiceStyle}>
+                    {selectedService?.imageUrl && (
+                      <div style={selectedServiceImageStyle}>
+                        <img src={selectedService.imageUrl} alt={selectedService.name} style={selectedServiceImageStyle} loading="lazy" />
+                      </div>
+                    )}
+                    <div>
+                      <p style={selectedServiceLabelStyle}>Selected Service</p>
+                      <p style={selectedServiceNameStyle}>{selectedService?.name}</p>
+                      <p style={selectedServiceDescStyle}>{selectedService?.description}</p>
+                      <div style={selectedServiceMetaStyle}>
+                        <span>{selectedService ? formatDuration(selectedService.durationMinutes) : "-"}</span>
+                        <span>{selectedService ? formatPrice(selectedService.price) : "-"}</span>
+                      </div>
                     </div>
-                    <h3 style={barberNameStyle}>{barber.name}</h3>
-                    <p style={barberSpecialtyStyle}>{barber.specialty}</p>
-                  </button>
-                ))}
-              </div>
+                  </div>
+                  <div style={gridStyle}>
+                    {barbers.map((barber) => (
+                      <button
+                        key={barber._id}
+                        onClick={() => handleBarberSelect(barber)}
+                        disabled={loading}
+                        style={{
+                          ...barberCardStyle,
+                          border: selectedBarber?._id === barber._id ? "2px solid #B9924A" : "1px solid rgba(23,23,23,0.06)",
+                          background: selectedBarber?._id === barber._id ? "rgba(185,146,74,0.05)" : "#FFFFFF",
+                        }}
+                      >
+                        <div style={barberImageStyle}>
+                          <img src={barber.imageUrl || "/images/professional-barber-giving-a-taper-fade-haircut-in-modern-barbershop.webp"} alt={barber.name} style={barberImageStyle} loading="lazy" />
+                        </div>
+                        <h3 style={barberNameStyle}>{barber.name}</h3>
+                        <p style={barberSpecialtyStyle}>{barber.specialty}</p>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           )}
 
           {step === "datetime" && (
             <>
-              <p style={subStepStyle}>
-                {selectedService?.name} {selectedBarber ? `with ${selectedBarber.name}` : ""}
-              </p>
+              <div style={selectedServiceStyle}>
+                {selectedService?.imageUrl && (
+                  <div style={selectedServiceImageStyle}>
+                    <img src={selectedService.imageUrl} alt={selectedService.name} style={selectedServiceImageStyle} loading="lazy" />
+                  </div>
+                )}
+                <div>
+                  <p style={selectedServiceLabelStyle}>Selected Service</p>
+                  <p style={selectedServiceNameStyle}>{selectedService?.name}</p>
+                  <p style={selectedServiceDescStyle}>{selectedService?.description}</p>
+                  <div style={selectedServiceMetaStyle}>
+                    <span>{selectedService ? formatDuration(selectedService.durationMinutes) : "-"}</span>
+                    <span>{selectedService ? formatPrice(selectedService.price) : "-"}</span>
+                  </div>
+                  {selectedBarber && (
+                    <p style={{ ...selectedServiceNameStyle, marginTop: "8px", fontSize: "14px", color: "#B9924A" }}>
+                      with {selectedBarber.name}
+                    </p>
+                  )}
+                </div>
+              </div>
               <div style={datePickerStyle}>
                 <label style={labelStyle}>Select Date</label>
                 <input
@@ -374,14 +476,51 @@ const Booking: React.FC = () => {
                   </div>
                 </div>
               )}
+              {selectedTime && (
+                <div style={continueButtonStyle}>
+                  <button
+                    type="button"
+                    onClick={() => setStep("customer")}
+                    disabled={loading}
+                    style={{
+                      ...submitButtonStyle,
+                      background: loading ? "#E8E0D1" : "#B9924A",
+                      cursor: loading ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {loading ? "LOADING..." : "CONTINUE TO DETAILS"}
+                  </button>
+                </div>
+              )}
             </>
           )}
 
           {step === "customer" && (
             <form onSubmit={handleSubmit} style={formStyle}>
-              <p style={subStepStyle}>
-                {selectedService?.name} on {selectedDate} at {selectedTime} {selectedBarber ? `with ${selectedBarber.name}` : ""}
-              </p>
+              <div style={selectedServiceStyle}>
+                {selectedService?.imageUrl && (
+                  <div style={selectedServiceImageStyle}>
+                    <img src={selectedService.imageUrl} alt={selectedService.name} style={selectedServiceImageStyle} loading="lazy" />
+                  </div>
+                )}
+                <div>
+                  <p style={selectedServiceLabelStyle}>Selected Service</p>
+                  <p style={selectedServiceNameStyle}>{selectedService?.name}</p>
+                  <p style={selectedServiceDescStyle}>{selectedService?.description}</p>
+                  <div style={selectedServiceMetaStyle}>
+                    <span>{selectedService ? formatDuration(selectedService.durationMinutes) : "-"}</span>
+                    <span>{selectedService ? formatPrice(selectedService.price) : "-"}</span>
+                  </div>
+                  {selectedBarber && (
+                    <p style={{ ...selectedServiceNameStyle, marginTop: "8px", fontSize: "14px", color: "#B9924A" }}>
+                      with {selectedBarber.name}
+                    </p>
+                  )}
+                  <p style={{ ...selectedServiceNameStyle, marginTop: "8px", fontSize: "14px", color: "#77736D" }}>
+                    {selectedDate} at {selectedTime}
+                  </p>
+                </div>
+              </div>
               <div style={formGridStyle} className="booking-form-grid">
                 <div style={formFieldStyle}>
                   <label style={labelStyle} htmlFor="name">Full Name *</label>
@@ -453,14 +592,14 @@ const Booking: React.FC = () => {
               <div style={submitStyle}>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || !isFormComplete()}
                   style={{
                     ...submitButtonStyle,
-                    background: loading ? "#E8E0D1" : "#B9924A",
-                    cursor: loading ? "not-allowed" : "pointer",
+                    background: loading || !isFormComplete() ? "#E8E0D1" : "#B9924A",
+                    cursor: loading || !isFormComplete() ? "not-allowed" : "pointer",
                   }}
                 >
-                  {loading ? "Booking..." : "Confirm Appointment"}
+                  {loading ? "BOOKING..." : "CONFIRM APPOINTMENT"}
                 </button>
               </div>
             </form>
@@ -495,7 +634,7 @@ const Booking: React.FC = () => {
               </div>
               <div style={modalDetailRowStyle}>
                 <span>Price:</span>
-                <span>₦{(confirmation.service.price / 100).toLocaleString()}</span>
+                <span>R{(confirmation.service.price / 100).toLocaleString()}</span>
               </div>
             </div>
 
@@ -534,7 +673,7 @@ const Booking: React.FC = () => {
 }
 
 const mainStyle: React.CSSProperties = {
-  background: "#F5F2EC",
+  background: "#171717",
   minHeight: "100vh",
   paddingTop: "80px",
 }
@@ -547,7 +686,7 @@ const containerStyle: React.CSSProperties = {
 
 const headerStyle: React.CSSProperties = {
   padding: "60px 0 40px",
-  borderBottom: "1px solid rgba(23, 23, 23, 0.06)",
+  borderBottom: "1px solid rgba(255, 255, 255, 0.06)",
 }
 
 const progressStyle: React.CSSProperties = {
@@ -556,6 +695,7 @@ const progressStyle: React.CSSProperties = {
   gap: "16px",
   marginBottom: "32px",
   flexWrap: "wrap",
+  color: "#FFFFFF",
 }
 
 const progressCircleStyle: React.CSSProperties = {
@@ -565,29 +705,33 @@ const progressCircleStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  fontFamily: "Inter, sans-serif",
-  fontSize: "14px",
+  fontFamily: "Cormorant Garamond, serif",
+  fontSize: "13px",
   fontWeight: 700,
   flexShrink: 0,
   transition: "all 0.3s ease",
+  background: "rgba(185, 146, 74, 0.15)",
+  color: "#B9924A",
 }
 
 const progressLabelStyle: React.CSSProperties = {
   fontFamily: "Inter, sans-serif",
-  fontSize: "12px",
+  fontSize: "11px",
   fontWeight: 500,
   letterSpacing: "0.05em",
   textTransform: "uppercase",
-  marginLeft: "8px",
+  marginLeft: "6px",
   whiteSpace: "nowrap",
+  color: "#77736D",
 }
 
 const progressLineStyle: React.CSSProperties = {
   flex: 1,
   height: "2px",
   maxWidth: "80px",
-  marginLeft: "8px",
+  marginLeft: "6px",
   transition: "all 0.3s ease",
+  background: "rgba(255, 255, 255, 0.1)",
 }
 
 const titleStyle: React.CSSProperties = {
@@ -595,7 +739,7 @@ const titleStyle: React.CSSProperties = {
   fontSize: "clamp(32px, 4vw, 44px)",
   fontWeight: 700,
   lineHeight: 1.2,
-  color: "#171717",
+  color: "#FFFFFF",
   margin: "0 0 12px",
   textAlign: "center",
   letterSpacing: "-0.01em",
@@ -605,7 +749,7 @@ const subtitleStyle: React.CSSProperties = {
   fontFamily: "Inter, sans-serif",
   fontSize: "17px",
   lineHeight: 1.6,
-  color: "#77736D",
+  color: "#B9924A",
   margin: "0 0 40px",
   textAlign: "center",
   fontWeight: 400,
@@ -623,21 +767,24 @@ const gridStyle: React.CSSProperties = {
 }
 
 const cardStyle: React.CSSProperties = {
-  padding: "28px 24px",
+  padding: "0",
   borderRadius: "8px",
   cursor: "pointer",
   transition: "all 0.2s ease",
   display: "flex",
   flexDirection: "column",
   textAlign: "left",
-  minHeight: "200px",
+  minHeight: "340px",
+  background: "rgba(255, 255, 255, 0.03)",
+  border: "1px solid rgba(255, 255, 255, 0.05)",
+  overflow: "hidden",
 }
 
 const cardTitleStyle: React.CSSProperties = {
   fontFamily: "Cormorant Garamond, serif",
   fontSize: "22px",
   fontWeight: 700,
-  color: "#171717",
+  color: "#FFFFFF",
   margin: "0 0 12px",
 }
 
@@ -645,7 +792,7 @@ const cardDescStyle: React.CSSProperties = {
   fontFamily: "Inter, sans-serif",
   fontSize: "15px",
   lineHeight: 1.6,
-  color: "#77736D",
+  color: "#B9924A",
   margin: "0 0 20px",
   flex: 1,
 }
@@ -655,14 +802,85 @@ const cardMetaStyle: React.CSSProperties = {
   justifyContent: "space-between",
   fontFamily: "Inter, sans-serif",
   fontSize: "13px",
-  color: "#77736D",
+  color: "#B9924A",
+  fontWeight: 500,
+}
+
+const cardContentStyle: React.CSSProperties = {
+  padding: "20px 24px",
+  display: "flex",
+  flexDirection: "column",
+  flex: 1,
+}
+
+const serviceImageStyle: React.CSSProperties = {
+  width: "100%",
+  height: "140px",
+  borderRadius: "8px 8px 0 0",
+  objectFit: "cover",
+  marginBottom: "16px",
+}
+
+const selectedServiceStyle: React.CSSProperties = {
+  display: "flex",
+  gap: "16px",
+  alignItems: "flex-start",
+  marginBottom: "24px",
+  padding: "16px",
+  background: "rgba(255, 255, 255, 0.03)",
+  border: "1px solid rgba(255, 255, 255, 0.05)",
+  borderRadius: "8px",
+}
+
+const selectedServiceImageStyle: React.CSSProperties = {
+  width: "80px",
+  height: "80px",
+  borderRadius: "8px",
+  objectFit: "cover",
+  flexShrink: 0,
+  border: "2px solid rgba(255, 255, 255, 0.1)",
+}
+
+const selectedServiceLabelStyle: React.CSSProperties = {
+  fontFamily: "Inter, sans-serif",
+  fontSize: "11px",
+  fontWeight: 600,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  color: "#B9924A",
+  margin: "0 0 4px",
+}
+
+const selectedServiceNameStyle: React.CSSProperties = {
+  fontFamily: "Cormorant Garamond, serif",
+  fontSize: "20px",
+  fontWeight: 700,
+  color: "#FFFFFF",
+  margin: "0 0 4px",
+}
+
+const selectedServiceDescStyle: React.CSSProperties = {
+  fontFamily: "Inter, sans-serif",
+  fontSize: "14px",
+  lineHeight: 1.5,
+  color: "#B9924A",
+  margin: "0 0 8px",
+}
+
+const selectedServiceMetaStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-start",
+  gap: "16px",
+  fontFamily: "Inter, sans-serif",
+  fontSize: "13px",
+  color: "#B9924A",
   fontWeight: 500,
 }
 
 const subStepStyle: React.CSSProperties = {
   fontFamily: "Inter, sans-serif",
   fontSize: "15px",
-  color: "#77736D",
+  color: "#B9924A",
   marginBottom: "24px",
   textAlign: "center",
 }
@@ -676,6 +894,8 @@ const barberCardStyle: React.CSSProperties = {
   minHeight: "320px",
   display: "flex",
   flexDirection: "column",
+  background: "rgba(255, 255, 255, 0.03)",
+  border: "1px solid rgba(255, 255, 255, 0.05)",
 }
 
 const barberImageStyle: React.CSSProperties = {
@@ -684,14 +904,14 @@ const barberImageStyle: React.CSSProperties = {
   borderRadius: "50%",
   objectFit: "cover",
   margin: "0 auto 16px",
-  border: "3px solid #F5F2EC",
+  border: "3px solid rgba(255, 255, 255, 0.1)",
 }
 
 const barberNameStyle: React.CSSProperties = {
   fontFamily: "Cormorant Garamond, serif",
   fontSize: "20px",
   fontWeight: 700,
-  color: "#171717",
+  color: "#FFFFFF",
   margin: "0 0 4px",
 }
 
@@ -706,7 +926,7 @@ const barberSpecialtyStyle: React.CSSProperties = {
 }
 
 const datePickerStyle: React.CSSProperties = {
-  marginBottom: "32px",
+  marginBottom: "24px",
 }
 
 const labelStyle: React.CSSProperties = {
@@ -717,7 +937,7 @@ const labelStyle: React.CSSProperties = {
   letterSpacing: "0.05em",
   textTransform: "uppercase",
   color: "#B9924A",
-  marginBottom: "8px",
+  marginBottom: "6px",
 }
 
 const inputStyle: React.CSSProperties = {
@@ -725,9 +945,9 @@ const inputStyle: React.CSSProperties = {
   padding: "14px 16px",
   fontFamily: "Inter, sans-serif",
   fontSize: "15px",
-  color: "#171717",
-  background: "#FFFFFF",
-  border: "1px solid #E8E0D1",
+  color: "#FFFFFF",
+  background: "rgba(255, 255, 255, 0.05)",
+  border: "1px solid rgba(255, 255, 255, 0.1)",
   borderRadius: "4px",
   outline: "none",
   transition: "border 0.2s ease, box-shadow 0.2s ease",
@@ -746,13 +966,13 @@ const timeGridStyle: React.CSSProperties = {
 }
 
 const timeButtonStyle: React.CSSProperties = {
-  padding: "14px 16px",
+  padding: "12px 16px",
   fontFamily: "Inter, sans-serif",
-  fontSize: "15px",
+  fontSize: "14px",
   fontWeight: 500,
-  color: "#171717",
-  background: "#FFFFFF",
-  border: "1px solid #E8E0D1",
+  color: "#FFFFFF",
+  background: "rgba(255, 255, 255, 0.05)",
+  border: "1px solid rgba(255, 255, 255, 0.1)",
   borderRadius: "4px",
   cursor: "pointer",
   transition: "all 0.2s ease",
@@ -762,13 +982,17 @@ const noSlotsStyle: React.CSSProperties = {
   padding: "32px",
   textAlign: "center",
   fontFamily: "Inter, sans-serif",
-  fontSize: "15px",
+  fontSize: "14px",
   color: "#77736D",
 }
 
 const formStyle: React.CSSProperties = {
   maxWidth: "720px",
   margin: "0 auto",
+  background: "rgba(255, 255, 255, 0.03)",
+  border: "1px solid rgba(255, 255, 255, 0.05)",
+  borderRadius: "8px",
+  padding: "32px",
 }
 
 const formGridStyle: React.CSSProperties = {
@@ -783,11 +1007,12 @@ const formFieldStyle: React.CSSProperties = {
 }
 
 const summaryStyle: React.CSSProperties = {
-  background: "#171717",
+  background: "#FFFFFF",
   borderRadius: "8px",
   padding: "28px 24px",
   marginBottom: "32px",
-  color: "#F5F2EC",
+  color: "#171717",
+  boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
 }
 
 const summaryTitleStyle: React.CSSProperties = {
@@ -795,20 +1020,25 @@ const summaryTitleStyle: React.CSSProperties = {
   fontSize: "22px",
   fontWeight: 700,
   margin: "0 0 20px",
-  color: "#F5F2EC",
+  color: "#171717",
 }
 
 const summaryRowStyle: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   padding: "8px 0",
-  borderBottom: "1px solid rgba(245,242,236,0.1)",
+  borderBottom: "1px solid rgba(0,0,0,0.1)",
   fontFamily: "Inter, sans-serif",
   fontSize: "15px",
 }
 
 const submitStyle: React.CSSProperties = {
   marginTop: "24px",
+}
+
+const continueButtonStyle: React.CSSProperties = {
+  marginTop: "24px",
+  textAlign: "center",
 }
 
 const submitButtonStyle: React.CSSProperties = {
@@ -819,7 +1049,8 @@ const submitButtonStyle: React.CSSProperties = {
   fontWeight: 600,
   letterSpacing: "0.05em",
   textTransform: "uppercase",
-  color: "#171717",
+  color: "#FFFFFF",
+  background: "#B9924A",
   border: "none",
   borderRadius: "4px",
   cursor: "pointer",
@@ -827,14 +1058,30 @@ const submitButtonStyle: React.CSSProperties = {
 }
 
 const errorStyle: React.CSSProperties = {
-  background: "#FDEDEC",
-  border: "1px solid #F5C6CB",
-  color: "#C0392B",
+  background: "#2a2a2a",
+  border: "1px solid #555555",
+  color: "#ffd580",
   padding: "14px 16px",
   borderRadius: "4px",
   marginBottom: "24px",
   fontFamily: "Inter, sans-serif",
   fontSize: "14px",
+}
+
+const loadingStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "32px",
+  fontFamily: "Inter, sans-serif",
+  fontSize: "15px",
+  color: "#B9924A",
+}
+
+const noDataStyle: React.CSSProperties = {
+  textAlign: "center",
+  padding: "32px",
+  fontFamily: "Inter, sans-serif",
+  fontSize: "15px",
+  color: "#77736D",
 }
 
 const modalOverlayStyle: React.CSSProperties = {
@@ -843,7 +1090,7 @@ const modalOverlayStyle: React.CSSProperties = {
   left: 0,
   right: 0,
   bottom: 0,
-  background: "rgba(23, 23, 23, 0.7)",
+  background: "rgba(0, 0, 0, 0.8)",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -852,14 +1099,14 @@ const modalOverlayStyle: React.CSSProperties = {
 }
 
 const modalStyle: React.CSSProperties = {
-  background: "#FFFFFF",
+  background: "#171717",
   borderRadius: "12px",
-  padding: "40px 32px",
+  padding: "32px 24px",
   maxWidth: "440px",
   width: "100%",
   maxHeight: "90vh",
   overflowY: "auto",
-  boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+  boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
   position: "relative",
 }
 
