@@ -677,7 +677,7 @@ button {
   display: grid;
   grid-template-columns: "1fr 380px";
   gap: 64px;
-  marginBottom: 80px;
+  margin-bottom: 80px;
 }
 
 @media (max-width: 1023px) {
@@ -691,7 +691,7 @@ button {
   display: grid;
   gridTemplateColumns: repeat(4, 1fr);
   gap: 32px;
-  marginBottom: 48px;
+  margin-bottom: 48px;
 }
 
 @media (max-width: 1023px) {
@@ -791,7 +791,7 @@ button {
   display: grid;
   gridTemplateColumns: repeat(2, 1fr);
   gap: 24px;
-  marginBottom: 32px;
+  margin-bottom: 32px;
 }
 
 @media (max-width: 1023px) {
